@@ -2,6 +2,62 @@ local utils = require('glance.utils')
 
 local M = {}
 
+local function convert_calls_to_locations(calls)
+  local locations = {}
+  for _, call in ipairs(calls) do
+    local item = call.from or call.to
+    -- Use the selectionRange of the item instead of fromRanges
+    -- fromRanges are the call sites, but we want to show the symbol locations
+    table.insert(locations, {
+      uri = item.uri,
+      range = item.selectionRange,
+    })
+  end
+  return locations
+end
+
+local function create_call_handler(method)
+  return function(bufnr, params, cb)
+    -- First, prepare call hierarchy to get the item
+    vim.lsp.buf_request(bufnr, 'textDocument/prepareCallHierarchy', params, function(err, result, ctx)
+      if err then
+        utils.error(('An error happened preparing call hierarchy: %s'):format(err.message))
+        return cb({})
+      end
+
+      if not result or vim.tbl_isempty(result) then
+        return cb({})
+      end
+
+      -- Use the first item
+      local item = result[1]
+
+      -- Now request incoming/outgoing calls with the item
+      vim.lsp.buf_request(bufnr, method.lsp_method, { item = item }, function(err2, result2, ctx2)
+        if err2 and not method.non_standard then
+          utils.error(('An error happened requesting %s: %s'):format(method.label, err2.message))
+        end
+
+        if result2 == nil or vim.tbl_isempty(result2) then
+          return cb({})
+        end
+
+        result2 = (
+          vim.fn.has('nvim-0.10.0') == 1 and vim.islist(result2)
+          or vim.tbl_islist(result2)
+        )
+          and result2
+          or { result2 }
+
+        -- Convert call hierarchy results to locations
+        result2 = convert_calls_to_locations(result2)
+
+        return cb(result2, ctx)
+      end)
+    end)
+  end
+end
+
 local function create_handler(method)
   return function(bufnr, params, cb)
     local _client_request_ids, cancel_all_requests, client_request_ids
@@ -55,6 +111,8 @@ end
 --- | '"implementations"'
 --- | '"definitions"'
 --- | '"references"'
+--- | '"incoming_calls"'
+--- | '"outgoing_calls"'
 
 M.methods = {
   type_definitions = {
@@ -73,11 +131,23 @@ M.methods = {
     label = 'references',
     lsp_method = 'textDocument/references',
   },
+  incoming_calls = {
+    label = 'incoming calls',
+    lsp_method = 'callHierarchy/incomingCalls',
+  },
+  outgoing_calls = {
+    label = 'outgoing calls',
+    lsp_method = 'callHierarchy/outgoingCalls',
+  },
 }
 
 function M.setup()
   for key, method in pairs(M.methods) do
-    M.methods[key].handler = create_handler(method)
+    if method.lsp_method == 'callHierarchy/incomingCalls' or method.lsp_method == 'callHierarchy/outgoingCalls' then
+      M.methods[key].handler = create_call_handler(method)
+    else
+      M.methods[key].handler = create_handler(method)
+    end
   end
 end
 
