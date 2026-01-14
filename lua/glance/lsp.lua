@@ -11,6 +11,10 @@ local function convert_calls_to_locations(calls)
     table.insert(locations, {
       uri = item.uri,
       range = item.selectionRange,
+      -- keep the original call entry and item so callers can request
+      -- nested incoming/outgoing calls for this symbol on demand
+      call = call,
+      call_item = item,
     })
   end
   return locations
@@ -149,6 +153,41 @@ function M.setup()
       M.methods[key].handler = create_handler(method)
     end
   end
+end
+
+-- Fetch incoming/outgoing calls for an existing CallHierarchyItem.
+-- This is used for on-demand nested expansion of call nodes.
+function M.fetch_calls_for_item(method_name, bufnr, item, cb)
+  local method = M.methods[method_name]
+  if not method then
+    return cb({})
+  end
+  -- If the CallHierarchyItem has a uri, prefer requesting from that buffer
+  -- so the language server has correct document context for cross-file queries.
+  local req_bufnr = bufnr
+  if item and item.uri then
+    req_bufnr = vim.uri_to_bufnr(item.uri)
+  end
+  vim.lsp.buf_request(req_bufnr, method.lsp_method, { item = item }, function(err, result, ctx)
+    if err and not method.non_standard then
+      utils.error(('An error happened requesting %s: %s'):format(method.label, err.message))
+    end
+
+    if result == nil or vim.tbl_isempty(result) then
+      return cb({})
+    end
+
+    result = (
+      vim.fn.has('nvim-0.10.0') == 1 and vim.islist(result)
+      or vim.tbl_islist(result)
+    )
+      and result
+      or { result }
+
+    result = convert_calls_to_locations(result)
+
+    return cb(result, ctx)
+  end)
 end
 
 local function client_position_params(params)

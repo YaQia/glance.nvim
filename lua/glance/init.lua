@@ -476,6 +476,7 @@ function Glance:create(opts)
   local list = require('glance.list').create({
     results = opts.results,
     parent_winnr = opts.winnr,
+    parent_bufnr = opts.bufnr,
     position_params = opts.params,
     method = opts.method,
     win_opts = list_win_opts,
@@ -590,7 +591,15 @@ end
 function Glance:toggle_fold(expand)
   local item = self.list:get_current_item()
 
-  if not item or self.list:is_flat() then
+  if not item then
+    return
+  end
+
+  -- Allow folding operations when the list is flat for call-hierarchy
+  -- methods since we render a flattened list where nesting is by call
+  -- relationships rather than file groups.
+  local allow_on_flat = (self.list and (self.list.method == 'incoming_calls' or self.list.method == 'outgoing_calls'))
+  if self.list:is_flat() and not allow_on_flat then
     return
   end
 
